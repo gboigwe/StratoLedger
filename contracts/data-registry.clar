@@ -120,3 +120,38 @@
     (ok dataset-id)
   )
 )
+
+;; Update dataset metadata (only allowed if the caller is the owner and metadata is not frozen)
+(define-public (update-dataset-metadata
+  (dataset-id uint)
+  (name (string-utf8 100))
+  (description (string-utf8 500))
+  (data-type (string-utf8 50))
+  (is-public bool))
+  (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND)))
+    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+    (asserts! (not (get metadata-frozen dataset)) ERR-METADATA-FROZEN)
+    (map-set datasets
+      { dataset-id: dataset-id }
+      (merge dataset {
+        name: name,
+        description: description,
+        data-type: data-type,
+        is-public: is-public
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Freeze dataset metadata (only the owner can freeze)
+(define-public (freeze-dataset-metadata (dataset-id uint))
+  (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND)))
+    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+    (map-set datasets
+      { dataset-id: dataset-id }
+      (merge dataset { metadata-frozen: true })
+    )
+    (ok true)
+  )
+)
