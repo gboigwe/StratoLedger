@@ -155,3 +155,33 @@
     (ok true)
   )
 )
+
+;; Transfer dataset ownership to a new owner
+(define-public (transfer-dataset (dataset-id uint) (new-owner principal))
+  (let (
+    (dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND))
+    (current-owner tx-sender)
+  )
+    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+    ;; Update the dataset's owner
+    (map-set datasets
+      { dataset-id: dataset-id }
+      (merge dataset { owner: new-owner })
+    )
+    ;; Remove dataset from current owner's list
+    (let (
+      (current-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: current-owner })))
+      (updated-current (filter (lambda (id) (not (is-eq id dataset-id))) (get dataset-ids current-list)))
+    )
+      (map-set datasets-by-owner { owner: current-owner } { dataset-ids: updated-current })
+    )
+    ;; Add dataset to the new owner's list
+    (let (
+      (new-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: new-owner })))
+      (updated-new (append (get dataset-ids new-list) (list dataset-id)))
+    )
+      (map-set datasets-by-owner { owner: new-owner } { dataset-ids: updated-new })
+    )
+    (ok true)
+  )
+)
