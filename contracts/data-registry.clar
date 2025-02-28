@@ -1,218 +1,257 @@
-;; StratoSense - Data Registry Contract (Commit 1)
-;; Basic definitions, dataset storage, counter, and admin management
+;; StratoSense Data Registry
+;; Version: 3.0
+;; Implements atmospheric data management with improved structure and error handling
 
-;; Error Codes
+;; Constants and Error Codes
+(define-constant CONTRACT-OWNER tx-sender)
 (define-constant ERR-NOT-AUTHORIZED (err u401))
-(define-constant ERR-DATASET-NOT-FOUND (err u404))
+(define-constant ERR-NOT-FOUND (err u404))
 (define-constant ERR-INVALID-PARAMS (err u400))
 (define-constant ERR-METADATA-FROZEN (err u403))
+(define-constant ERR-LIST-FULL (err u429))
 
-;; Dataset Map: Stores each dataset with its metadata.
+;; Data Validation Constants
+(define-constant MAX-LAT-MULTIPLIER (* 90 1000000))
+(define-constant MAX-LON-MULTIPLIER (* 180 1000000))
+(define-constant MAX-LIST-SIZE u1000)
+
+;; Data Structures
 (define-map datasets
-  { dataset-id: uint }
-  {
-    owner: principal,
-    name: (string-utf8 100),
-    description: (string-utf8 500),
-    data-type: (string-utf8 50),
-    collection-date: uint,
-    altitude-min: uint,
-    altitude-max: uint,
-    latitude: int,
-    longitude: int,
-    ipfs-hash: (string-ascii 100),
-    is-public: bool,
-    metadata-frozen: bool,
-    created-at: uint
-  }
+    { dataset-id: uint }
+    {
+        owner: principal,
+        metadata: {
+            name: (string-utf8 100),
+            description: (string-utf8 500),
+            data-type: (string-utf8 50)
+        },
+        location: {
+            altitude-min: uint,
+            altitude-max: uint,
+            latitude: int,
+            longitude: int
+        },
+        storage: {
+            ipfs-hash: (string-ascii 100),
+            created-at: uint
+        },
+        flags: {
+            is-public: bool,
+            metadata-frozen: bool
+        }
+    }
 )
 
-;; Counter for dataset IDs
+;; Owner dataset tracking
+(define-map datasets-by-owner
+    { owner: principal }
+    { dataset-ids: (list 1000 uint) }
+)
+
+;; State Variables
 (define-data-var dataset-counter uint u0)
 
-;; Map for datasets by owner
-(define-map datasets-by-owner
-  { owner: principal }
-  { dataset-ids: (list 1000 uint) }
+;; Private Helper Functions
+
+;; Validates geographic coordinates
+(define-private (validate-coordinates (lat int) (lon int))
+    (and 
+        (and (>= lat (- MAX-LAT-MULTIPLIER)) (<= lat MAX-LAT-MULTIPLIER))
+        (and (>= lon (- MAX-LON-MULTIPLIER)) (<= lon MAX-LON-MULTIPLIER))
+    )
 )
 
-;; Contract admin
-(define-data-var contract-admin principal tx-sender)
-
-;; Admin management functions
-(define-read-only (get-contract-admin)
-  (ok (var-get contract-admin))
+;; Validates altitude range
+(define-private (validate-altitude-range (min uint) (max uint))
+    (and 
+        (>= min u0)
+        (>= max min)
+    )
 )
 
-(define-public (set-contract-admin (new-admin principal))
-  (begin
-    (asserts! (is-eq tx-sender (var-get contract-admin)) ERR-NOT-AUTHORIZED)
-    (var-set contract-admin new-admin)
-    (ok new-admin)
-  )
+;; Updates owner's dataset list safely
+(define-private (update-owner-dataset-list (owner principal) (dataset-id uint) (is-add bool))
+    (let (
+        (current-data (default-to { dataset-ids: (list) } 
+                      (map-get? datasets-by-owner { owner: owner })))
+        (current-ids (get dataset-ids current-data))
+    )
+        (if is-add
+            ;; Adding dataset
+            (if (>= (len current-ids) u1000)
+                ERR-LIST-FULL
+                (ok (map-set datasets-by-owner
+                    { owner: owner }
+                    { dataset-ids: (unwrap! (as-max-len? 
+                        (append current-ids dataset-id) u1000)
+                        ERR-LIST-FULL) }
+                )))
+            ;; Removing dataset
+            (ok (map-set datasets-by-owner
+                { owner: owner }
+                { dataset-ids: (filter remove-dataset-id current-ids) }
+            ))
+        )
+    )
 )
 
-;; Helper to check if the caller is the owner of a dataset
+;; Helper for filtering dataset IDs
+(define-private (remove-dataset-id (id uint)) 
+    (not (is-eq id id))
+)
+
+;; Verifies dataset ownership
 (define-private (is-dataset-owner (dataset-id uint))
-  (let ((dataset (map-get? datasets { dataset-id: dataset-id })))
-    (match dataset
-      data (is-eq tx-sender (get owner data))
-      false
+    (match (map-get? datasets { dataset-id: dataset-id })
+        data (is-eq tx-sender (get owner data))
+        false
     )
-  )
 )
 
-;; Register a new atmospheric dataset
+;; Public Functions
+
+;; Registers a new atmospheric dataset
 (define-public (register-dataset 
-  (name (string-utf8 100))
-  (description (string-utf8 500))
-  (data-type (string-utf8 50))
-  (collection-date uint)
-  (altitude-min uint)
-  (altitude-max uint)
-  (latitude int)
-  (longitude int)
-  (ipfs-hash (string-ascii 100))
-  (is-public bool))
-  (let (
-    (dataset-id (+ (var-get dataset-counter) u1))
-    (owner-principal tx-sender)
-    (current-time (unwrap-panic (get-block-info? time u0)))
-  )
-    ;; Validate parameters
-    (asserts! (>= altitude-min u0) ERR-INVALID-PARAMS)
-    (asserts! (>= altitude-max altitude-min) ERR-INVALID-PARAMS)
-    (asserts! (and (>= latitude (* -90 1000000)) (<= latitude (* 90 1000000))) ERR-INVALID-PARAMS)
-    (asserts! (and (>= longitude (* -180 1000000)) (<= longitude (* 180 1000000))) ERR-INVALID-PARAMS)
-    
-    ;; Register the dataset
-    (map-set datasets
-      { dataset-id: dataset-id }
-      {
-        owner: owner-principal,
-        name: name,
-        description: description,
-        data-type: data-type,
-        collection-date: collection-date,
-        altitude-min: altitude-min,
-        altitude-max: altitude-max,
-        latitude: latitude,
-        longitude: longitude,
-        ipfs-hash: ipfs-hash,
-        is-public: is-public,
-        metadata-frozen: false,
-        created-at: current-time
-      }
-    )
-    
-    ;; Update the owner's dataset list
+        (name (string-utf8 100))
+        (description (string-utf8 500))
+        (data-type (string-utf8 50))
+        (altitude-min uint)
+        (altitude-max uint)
+        (latitude int)
+        (longitude int)
+        (ipfs-hash (string-ascii 100))
+        (is-public bool))
     (let (
-      (current-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: owner-principal })))
-      (updated-list (append (get dataset-ids current-list) (list dataset-id)))
+        (dataset-id (+ (var-get dataset-counter) u1))
+        (current-time (unwrap-panic (get-block-info? time u0)))
     )
-      (map-set datasets-by-owner
-        { owner: owner-principal }
-        { dataset-ids: updated-list }
-      )
+        ;; Input validation
+        (asserts! (validate-altitude-range altitude-min altitude-max) ERR-INVALID-PARAMS)
+        (asserts! (validate-coordinates latitude longitude) ERR-INVALID-PARAMS)
+        
+        ;; Create dataset
+        (map-set datasets
+            { dataset-id: dataset-id }
+            {
+                owner: tx-sender,
+                metadata: {
+                    name: name,
+                    description: description,
+                    data-type: data-type
+                },
+                location: {
+                    altitude-min: altitude-min,
+                    altitude-max: altitude-max,
+                    latitude: latitude,
+                    longitude: longitude
+                },
+                storage: {
+                    ipfs-hash: ipfs-hash,
+                    created-at: current-time
+                },
+                flags: {
+                    is-public: is-public,
+                    metadata-frozen: false
+                }
+            }
+        )
+        
+        ;; Update owner's dataset list
+        (try! (update-owner-dataset-list tx-sender dataset-id true))
+        
+        ;; Update counter and return
+        (var-set dataset-counter dataset-id)
+        (ok dataset-id)
     )
-    
-    (var-set dataset-counter dataset-id)
-    (ok dataset-id)
-  )
 )
 
-;; Update dataset metadata (only allowed if the caller is the owner and metadata is not frozen)
+;; Updates dataset metadata
 (define-public (update-dataset-metadata
-  (dataset-id uint)
-  (name (string-utf8 100))
-  (description (string-utf8 500))
-  (data-type (string-utf8 50))
-  (is-public bool))
-  (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND)))
-    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
-    (asserts! (not (get metadata-frozen dataset)) ERR-METADATA-FROZEN)
-    (map-set datasets
-      { dataset-id: dataset-id }
-      (merge dataset {
-        name: name,
-        description: description,
-        data-type: data-type,
-        is-public: is-public
-      })
+        (dataset-id uint)
+        (name (string-utf8 100))
+        (description (string-utf8 500))
+        (data-type (string-utf8 50))
+        (is-public bool))
+    (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-NOT-FOUND)))
+        (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+        (asserts! (not (get metadata-frozen (get flags dataset))) ERR-METADATA-FROZEN)
+        
+        (map-set datasets
+            { dataset-id: dataset-id }
+            (merge dataset {
+                metadata: {
+                    name: name,
+                    description: description,
+                    data-type: data-type
+                },
+                flags: (merge (get flags dataset) {
+                    is-public: is-public
+                })
+            })
+        )
+        (ok true)
     )
-    (ok true)
-  )
 )
 
-;; Freeze dataset metadata (only the owner can freeze)
+;; Freezes dataset metadata
 (define-public (freeze-dataset-metadata (dataset-id uint))
-  (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND)))
-    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
-    (map-set datasets
-      { dataset-id: dataset-id }
-      (merge dataset { metadata-frozen: true })
+    (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-NOT-FOUND)))
+        (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+        
+        (ok (map-set datasets
+            { dataset-id: dataset-id }
+            (merge dataset {
+                flags: (merge (get flags dataset) {
+                    metadata-frozen: true
+                })
+            })
+        ))
     )
-    (ok true)
-  )
 )
 
-;; Transfer dataset ownership to a new owner
+;; Transfers dataset ownership
 (define-public (transfer-dataset (dataset-id uint) (new-owner principal))
-  (let (
-    (dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-DATASET-NOT-FOUND))
-    (current-owner tx-sender)
-  )
-    (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
-    ;; Update the dataset's owner
-    (map-set datasets
-      { dataset-id: dataset-id }
-      (merge dataset { owner: new-owner })
+    (let ((dataset (unwrap! (map-get? datasets { dataset-id: dataset-id }) ERR-NOT-FOUND)))
+        ;; Verify ownership
+        (asserts! (is-dataset-owner dataset-id) ERR-NOT-AUTHORIZED)
+        
+        ;; Remove from current owner's list
+        (try! (update-owner-dataset-list tx-sender dataset-id false))
+        
+        ;; Add to new owner's list
+        (try! (update-owner-dataset-list new-owner dataset-id true))
+        
+        ;; Update dataset ownership
+        (map-set datasets
+            { dataset-id: dataset-id }
+            (merge dataset { owner: new-owner })
+        )
+        (ok true)
     )
-    ;; Remove dataset from current owner's list
-    (let (
-      (current-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: current-owner })))
-      (updated-current (filter (lambda (id) (not (is-eq id dataset-id))) (get dataset-ids current-list)))
-    )
-      (map-set datasets-by-owner { owner: current-owner } { dataset-ids: updated-current })
-    )
-    ;; Add dataset to the new owner's list
-    (let (
-      (new-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: new-owner })))
-      (updated-new (append (get dataset-ids new-list) (list dataset-id)))
-    )
-      (map-set datasets-by-owner { owner: new-owner } { dataset-ids: updated-new })
-    )
-    (ok true)
-  )
 )
 
-;; Get dataset information by ID
+;; Read-Only Functions
+
+;; Gets dataset information
 (define-read-only (get-dataset (dataset-id uint))
-  (match (map-get? datasets { dataset-id: dataset-id })
-    data (ok data)
-    none (err ERR-DATASET-NOT-FOUND)
-  )
+    (map-get? datasets { dataset-id: dataset-id })
 )
 
-;; Get all dataset IDs associated with a specific owner
+;; Gets all datasets owned by a principal
 (define-read-only (get-datasets-by-owner (owner principal))
-  (let ((owner-data (map-get? datasets-by-owner { owner: owner })))
-    (match owner-data
-      data (ok (get dataset-ids data))
-      none (ok (list))
-    )
-  )
+    (default-to { dataset-ids: (list) }
+        (map-get? datasets-by-owner { owner: owner }))
 )
 
-;; Get the total number of datasets registered
+;; Gets total number of registered datasets
 (define-read-only (get-dataset-count)
-  (ok (var-get dataset-counter))
+    (ok (var-get dataset-counter))
 )
 
-;; Check if a dataset is public
+;; Checks if a dataset is public
 (define-read-only (is-dataset-public (dataset-id uint))
-  (match (map-get? datasets { dataset-id: dataset-id })
-    data (ok (get is-public data))
-    none (err ERR-DATASET-NOT-FOUND)
-  )
+    (match (map-get? datasets { dataset-id: dataset-id })
+        data (ok (get is-public (get flags data)))
+        (err ERR-NOT-FOUND)
+    )
 )
