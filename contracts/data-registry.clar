@@ -185,3 +185,34 @@
     (ok true)
   )
 )
+
+;; Get dataset information by ID
+(define-read-only (get-dataset (dataset-id uint))
+  (match (map-get? datasets { dataset-id: dataset-id })
+    data (ok data)
+    none (err ERR-DATASET-NOT-FOUND)
+  )
+)
+
+;; Get all dataset IDs associated with a specific owner
+(define-read-only (get-datasets-by-owner (owner principal))
+  (let ((owner-data (map-get? datasets-by-owner { owner: owner })))
+    (match owner-data
+      data (ok (get dataset-ids data))
+      none (ok (list))
+    )
+  )
+)
+
+;; Get the total number of datasets registered
+(define-read-only (get-dataset-count)
+  (ok (var-get dataset-counter))
+)
+
+;; Check if a dataset is public
+(define-read-only (is-dataset-public (dataset-id uint))
+  (match (map-get? datasets { dataset-id: dataset-id })
+    data (ok (get is-public data))
+    none (err ERR-DATASET-NOT-FOUND)
+  )
+)
