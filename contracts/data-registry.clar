@@ -57,7 +57,66 @@
   (let ((dataset (map-get? datasets { dataset-id: dataset-id })))
     (match dataset
       data (is-eq tx-sender (get owner data))
-      none false
+      false
     )
+  )
+)
+
+;; Register a new atmospheric dataset
+(define-public (register-dataset 
+  (name (string-utf8 100))
+  (description (string-utf8 500))
+  (data-type (string-utf8 50))
+  (collection-date uint)
+  (altitude-min uint)
+  (altitude-max uint)
+  (latitude int)
+  (longitude int)
+  (ipfs-hash (string-ascii 100))
+  (is-public bool))
+  (let (
+    (dataset-id (+ (var-get dataset-counter) u1))
+    (owner-principal tx-sender)
+    (current-time (unwrap-panic (get-block-info? time u0)))
+  )
+    ;; Validate parameters
+    (asserts! (>= altitude-min u0) ERR-INVALID-PARAMS)
+    (asserts! (>= altitude-max altitude-min) ERR-INVALID-PARAMS)
+    (asserts! (and (>= latitude (* -90 1000000)) (<= latitude (* 90 1000000))) ERR-INVALID-PARAMS)
+    (asserts! (and (>= longitude (* -180 1000000)) (<= longitude (* 180 1000000))) ERR-INVALID-PARAMS)
+    
+    ;; Register the dataset
+    (map-set datasets
+      { dataset-id: dataset-id }
+      {
+        owner: owner-principal,
+        name: name,
+        description: description,
+        data-type: data-type,
+        collection-date: collection-date,
+        altitude-min: altitude-min,
+        altitude-max: altitude-max,
+        latitude: latitude,
+        longitude: longitude,
+        ipfs-hash: ipfs-hash,
+        is-public: is-public,
+        metadata-frozen: false,
+        created-at: current-time
+      }
+    )
+    
+    ;; Update the owner's dataset list
+    (let (
+      (current-list (default-to { dataset-ids: (list) } (map-get? datasets-by-owner { owner: owner-principal })))
+      (updated-list (append (get dataset-ids current-list) (list dataset-id)))
+    )
+      (map-set datasets-by-owner
+        { owner: owner-principal }
+        { dataset-ids: updated-list }
+      )
+    )
+    
+    (var-set dataset-counter dataset-id)
+    (ok dataset-id)
   )
 )
